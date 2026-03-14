@@ -3,10 +3,8 @@ Windows Activity Logger - Core Module
 アクティブウィンドウを監視してCSVに記録する
 """
 import csv
-import os
 import threading
-import time
-from dataclasses import dataclass, fields
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 

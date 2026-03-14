@@ -3,11 +3,12 @@ Windows Activity Logger - tkinter UI
 シンプルな3タブ構成:
   [ログ一覧] [サマリー] [インサイト]
 """
+import os
 import subprocess
 import sys
 import threading
 import tkinter as tk
-from tkinter import messagebox, ttk
+from tkinter import ttk
 from collections import defaultdict
 
 from logger import ActivityLogger
@@ -308,7 +309,6 @@ class App(tk.Tk):
             self.status_dot.config(fg=CLR["success"])
 
     def _open_log_folder(self):
-        import os
         path = str(self.logger.get_csv_path().parent.resolve())
         if sys.platform == "win32":
             os.startfile(path)
