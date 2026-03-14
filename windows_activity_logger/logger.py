@@ -17,6 +17,17 @@ try:
 except ImportError:
     WINDOWS = False
 
+# デフォルトのログ保存先（ホームディレクトリ以下）
+DEFAULT_OUTPUT_DIR = Path.home() / ".windows_activity_logger" / "logs"
+
+# 会議中と判断するウィンドウタイトルのキーワード (Limitation #3 対応)
+_MEETING_TITLE_KEYWORDS = [
+    "meeting", "会議", "ミーティング", "conference",
+    "call", "通話", "webinar", "ウェビナー",
+]
+# 会議アプリのキーワード
+_MEETING_APP_KEYWORDS = ["teams", "zoom", "webex"]
+
 
 @dataclass
 class ActivityRecord:
@@ -45,18 +56,29 @@ def _get_active_window_info() -> tuple[str, str]:
 
 
 def _categorize(app_name: str, title: str) -> str:
-    """アプリ名からカテゴリを推定する"""
+    """
+    アプリ名とウィンドウタイトルからカテゴリを推定する。
+
+    会議アプリ (teams/zoom/webex) はウィンドウタイトルに
+    会議系キーワードが含まれる場合のみ "meeting" に分類し、
+    それ以外は "communication" に分類する (Limitation #3 修正)。
+    """
     app_lower = app_name.lower()
     title_lower = title.lower()
 
+    # 会議アプリ + 会議タイトルキーワード → "meeting"
+    if any(k in app_lower for k in _MEETING_APP_KEYWORDS):
+        if any(k in title_lower for k in _MEETING_TITLE_KEYWORDS):
+            return "meeting"
+
     categories = {
-        "browser": ["chrome", "firefox", "edge", "safari", "opera"],
+        "browser":       ["chrome", "firefox", "edge", "safari", "opera"],
         "communication": ["teams", "slack", "zoom", "outlook", "thunderbird", "discord"],
-        "development": ["code", "pycharm", "idea", "vim", "notepad++", "sublime", "cursor"],
-        "office": ["excel", "word", "powerpoint", "onenote", "libreoffice"],
-        "file_manager": ["explorer", "finder"],
-        "terminal": ["cmd", "powershell", "terminal", "bash", "wsl"],
-        "meeting": ["teams", "zoom", "webex", "meet"],
+        "development":   ["code", "pycharm", "idea", "vim", "notepad++", "sublime", "cursor"],
+        "office":        ["excel", "word", "powerpoint", "onenote", "libreoffice"],
+        "file_manager":  ["explorer", "finder"],
+        "terminal":      ["cmd", "powershell", "terminal", "bash", "wsl"],
+        "meeting":       ["webex", "meet"],
     }
 
     for category, keywords in categories.items():
@@ -64,6 +86,31 @@ def _categorize(app_name: str, title: str) -> str:
             return category
 
     return "other"
+
+
+def load_from_csv(csv_path: Path) -> list[ActivityRecord]:
+    """
+    既存のCSVファイルから ActivityRecord のリストを読み込む。
+    読み込み失敗時・ファイル不在時は空リストを返す。(Limitation #7 対応)
+    """
+    records = []
+    try:
+        with open(csv_path, newline="", encoding="utf-8-sig") as f:
+            reader = csv.DictReader(f)
+            for row in reader:
+                try:
+                    records.append(ActivityRecord(
+                        timestamp=row["timestamp"],
+                        app_name=row["app_name"],
+                        window_title=row["window_title"],
+                        duration_sec=float(row["duration_sec"]),
+                        category=row.get("category", "other"),
+                    ))
+                except (KeyError, ValueError):
+                    continue
+    except (FileNotFoundError, PermissionError):
+        pass
+    return records
 
 
 class ActivityLogger:
@@ -74,8 +121,13 @@ class ActivityLogger:
 
     DEFAULT_INTERVAL = 5  # 秒ごとにポーリング
 
-    def __init__(self, output_dir: str = "logs", interval: int = DEFAULT_INTERVAL):
-        self.output_dir = Path(output_dir)
+    def __init__(
+        self,
+        output_dir: "str | Path | None" = None,
+        interval: int = DEFAULT_INTERVAL,
+    ):
+        # output_dir が None の場合はデフォルトのホームディレクトリ以下を使用
+        self.output_dir = Path(output_dir) if output_dir else DEFAULT_OUTPUT_DIR
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self.interval = interval
 
@@ -106,7 +158,7 @@ class ActivityLogger:
             self._thread.join(timeout=self.interval + 2)
 
     def get_records(self) -> list[ActivityRecord]:
-        """収集済みのレコードをコピーして返す"""
+        """収集済みのレコードをコピーして返す（スレッドセーフ）"""
         with self._lock:
             return list(self._records)
 
@@ -115,6 +167,14 @@ class ActivityLogger:
 
     def is_running(self) -> bool:
         return bool(self._thread and self._thread.is_alive())
+
+    def load_records(self, records: list[ActivityRecord]) -> None:
+        """
+        外部からレコードを先頭に追加する（起動時の過去ログ復元用）。
+        スレッドセーフ。(Limitation #7 対応)
+        """
+        with self._lock:
+            self._records = records + self._records
 
     # ------------------------------------------------------------------
     # 内部処理

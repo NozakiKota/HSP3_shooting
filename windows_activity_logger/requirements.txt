@@ -1,2 +1,8 @@
+# Windows API アクセス（Windows のみ）
 pywin32>=306
 psutil>=5.9.0
+
+# Google Calendar 連携（Feature #9）
+google-api-python-client>=2.100.0
+google-auth-httplib2>=0.1.1
+google-auth-oauthlib>=1.1.0
