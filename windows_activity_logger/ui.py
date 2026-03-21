@@ -551,9 +551,16 @@ class App(tk.Tk):
 
     def _load_past_records(self):
         """
-        起動時に DEFAULT_OUTPUT_DIR 内の最新 CSV を読み込んで
-        メモリに復元する。(Limitation #7 対応)
+        起動時に過去ログを復元する。(Limitation #7 対応)
+        優先順位: SQLite DB → CSV（DBが空またはなければCSVにフォールバック）
         """
+        # 1. SQLite DBからの復元を優先（エラー後の再開に対応）
+        db_records = self.logger.load_from_db()
+        if db_records:
+            self.logger.load_records(db_records)
+            return
+
+        # 2. DBが空の場合はCSVから復元（後方互換）
         log_dir = DEFAULT_OUTPUT_DIR
         if not log_dir.exists():
             return

@@ -1,6 +1,6 @@
 """
 Windows Activity Logger - Core Module
-アクティブウィンドウを監視してCSVに記録する
+アクティブウィンドウを監視してCSVおよびSQLiteに記録する
 """
 import csv
 import threading
@@ -19,6 +19,13 @@ except ImportError:
 
 # デフォルトのログ保存先（ホームディレクトリ以下）
 DEFAULT_OUTPUT_DIR = Path.home() / ".windows_activity_logger" / "logs"
+
+# 遅延インポート（循環参照回避・オプション機能として扱う）
+try:
+    from database import ActivityDatabase
+    _DB_AVAILABLE = True
+except ImportError:
+    _DB_AVAILABLE = False
 
 # 会議中と判断するウィンドウタイトルのキーワード (Limitation #3 対応)
 _MEETING_TITLE_KEYWORDS = [
@@ -116,7 +123,8 @@ def load_from_csv(csv_path: Path) -> list[ActivityRecord]:
 class ActivityLogger:
     """
     バックグラウンドでアクティブウィンドウを監視し、
-    操作ログをメモリと CSV ファイルに記録する。
+    操作ログをメモリ・CSV・SQLite に記録する。
+    SQLite を使うことでエラー後も途中から再開可能。
     """
 
     DEFAULT_INTERVAL = 5  # 秒ごとにポーリング
@@ -125,6 +133,7 @@ class ActivityLogger:
         self,
         output_dir: "str | Path | None" = None,
         interval: int = DEFAULT_INTERVAL,
+        use_db: bool = True,
     ):
         # output_dir が None の場合はデフォルトのホームディレクトリ以下を使用
         self.output_dir = Path(output_dir) if output_dir else DEFAULT_OUTPUT_DIR
@@ -135,6 +144,14 @@ class ActivityLogger:
         self._lock = threading.Lock()
         self._stop_event = threading.Event()
         self._thread: threading.Thread | None = None
+
+        # SQLite DB（エラー後の再開用）
+        self._db: "ActivityDatabase | None" = None
+        if use_db and _DB_AVAILABLE:
+            self._db = ActivityDatabase()
+            self._session_id = datetime.now().strftime("%Y%m%d_%H%M%S")
+        else:
+            self._session_id = ""
 
         self._csv_path = self._new_csv_path()
         self._init_csv()
@@ -176,6 +193,25 @@ class ActivityLogger:
         with self._lock:
             self._records = records + self._records
 
+    def load_from_db(self) -> list[ActivityRecord]:
+        """
+        SQLite DBから全レコードを読み込む（再開用）。
+        DBが無効な場合は空リストを返す。
+        """
+        if self._db is None:
+            return []
+        return self._db.fetch_all()
+
+    def get_db_latest_timestamp(self) -> "str | None":
+        """DBに保存されている最新タイムスタンプを返す（再開ポイント確認用）"""
+        if self._db is None:
+            return None
+        return self._db.get_latest_timestamp()
+
+    def get_db(self) -> "ActivityDatabase | None":
+        """ActivityDatabase インスタンスを返す（外部からのアクセス用）"""
+        return self._db
+
     # ------------------------------------------------------------------
     # 内部処理
     # ------------------------------------------------------------------
@@ -211,6 +247,13 @@ class ActivityLogger:
     def _save_record(self, record: ActivityRecord) -> None:
         with self._lock:
             self._records.append(record)
+
+        # SQLite に保存（エラー時も CSV 書き込みは続行する）
+        if self._db is not None:
+            try:
+                self._db.insert(record, session_id=self._session_id)
+            except Exception:
+                pass  # DB保存失敗はサイレントに無視してCSVへ継続
 
         with open(self._csv_path, "a", newline="", encoding="utf-8-sig") as f:
             writer = csv.writer(f)
